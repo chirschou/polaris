@@ -51,4 +51,5 @@ import (
 	_ "github.com/polarismesh/polaris/service/interceptor"
 	_ "github.com/polarismesh/polaris/store/boltdb"
 	_ "github.com/polarismesh/polaris/store/mysql"
+	_ "github.com/polarismesh/polaris/store/postgresql"
 )
