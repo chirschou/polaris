@@ -83,7 +83,10 @@ SELECT setval(pg_get_serial_sequence('config_file','id'),
 -- 鉴权种子数据齐全（缺任一项控制台都会被拒绝访问）
 SELECT count(*) FROM auth_strategy;           -- 期望 >= 3
 SELECT count(*) FROM auth_strategy_function;  -- 期望 >= 5
-SELECT count(*) FROM auth_strategy_resource;  -- 期望 >= 41
+SELECT count(*) FROM auth_strategy_resource;  -- 期望 >= 36
+
+-- 36 是建表 DDL 的种子行数(12 种 res_type × 3 个策略),实测于全新 PG 18。
+-- 迁移后通常大于这个数 —— 业务命名空间的授权记录也存在这张表里(res_type=0)。
 
 -- 序列已重置
 SELECT last_value FROM config_file_id_seq;
