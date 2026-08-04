@@ -119,6 +119,14 @@ psql -U postgres -d polaris_server -f store/postgresql/scripts/polaris_server.sq
 - **`now()` 语义**：PostgreSQL 的 `now()` 返回事务开始时间，同一事务内多次写入得到相同时间戳；MySQL 的 `SYSDATE()` 为实时时间。若需实时值可改用 `clock_timestamp()`。
 - **不提供 delta 升级脚本**：`store/mysql/scripts/delta` 用于历史 MySQL 部署的版本升级，PostgreSQL 为全新支持，仅提供全量 schema。
 
+## 从 MySQL 迁移
+
+见 [scripts/migrate_from_mysql.md](scripts/migrate_from_mysql.md)。
+
+有三个坑值得先读：整表 `TRUNCATE` 会清掉鉴权初始化数据导致控制台全部拒绝访问；
+手工改鉴权数据后必须 `UPDATE auth_strategy SET mtime = now()` 否则缓存不刷新；
+`BIGSERIAL` 列导入后必须 `setval`，否则下一次插入即主键冲突。
+
 ## 测试
 
 单元测试：`go test ./store/postgresql/...`。其中 `dialect_test.go` 覆盖占位符改写（字面量内的 `?`、`''` 转义、批量插入编号）与 bool 参数转换。
