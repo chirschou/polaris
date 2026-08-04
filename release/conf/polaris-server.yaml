@@ -465,6 +465,20 @@ store:
   #     maxIdleConns: 50
   #     connMaxLifetime: 300 # Unit second
   #     txIsolationLevel: 2 #LevelReadCommitted
+  # PostgreSQL storage plugin
+  # name: postgresqlStore
+  # option:
+  #   master:
+  #     dbType: postgres
+  #     dbName: polaris_server
+  #     dbUser: ${POSTGRES_USER} ##DB_USER##
+  #     dbPwd: ${POSTGRES_PWD} ##DB_PWD##
+  #     dbAddr: ${POSTGRES_HOST} ##DB_ADDR## # host:port，例如 127.0.0.1:5432
+  #     sslMode: disable # disable/require/verify-ca/verify-full
+  #     maxOpenConns: 300
+  #     maxIdleConns: 50
+  #     connMaxLifetime: 300 # Unit second
+  #     txIsolationLevel: 2 #LevelReadCommitted
 # polaris-server plugin settings
 plugin:
   crypto:

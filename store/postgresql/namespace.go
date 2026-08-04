@@ -15,7 +15,7 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package sqldb
+package postgresql
 
 import (
 	"database/sql"
@@ -50,8 +50,8 @@ func (ns *namespaceStore) AddNamespace(namespace *model.Namespace) error {
 			str := `
 			INSERT INTO namespace (name, comment, token, owner, ctime
 				, mtime, service_export_to, metadata)
-			VALUES (?, ?, ?, ?, sysdate()
-				, sysdate(), ?, ?)
+			VALUES (?, ?, ?, ?, now()
+				, now(), ?, ?)
 			`
 			args := []interface{}{namespace.Name, namespace.Comment, namespace.Token, namespace.Owner,
 				utils.MustJson(namespace.ServiceExportTo), utils.MustJson(namespace.Metadata)}
@@ -77,7 +77,7 @@ func (ns *namespaceStore) UpdateNamespace(namespace *model.Namespace) error {
 	return RetryTransaction("updateNamespace", func() error {
 		return ns.master.processWithTransaction("updateNamespace", func(tx *BaseTx) error {
 			str := "update namespace set owner = ?, comment = ?, service_export_to = ?, metadata = ?," +
-				" mtime = sysdate() where name = ?"
+				" mtime = now() where name = ?"
 			args := []interface{}{namespace.Owner, namespace.Comment, utils.MustJson(namespace.ServiceExportTo),
 				utils.MustJson(namespace.Metadata), namespace.Name}
 			if _, err := tx.Exec(str, args...); err != nil {
@@ -102,7 +102,7 @@ func (ns *namespaceStore) UpdateNamespaceToken(name string, token string) error 
 	}
 	return RetryTransaction("updateNamespaceToken", func() error {
 		return ns.master.processWithTransaction("updateNamespaceToken", func(tx *BaseTx) error {
-			str := "update namespace set token = ?, mtime = sysdate() where name = ?"
+			str := "update namespace set token = ?, mtime = now() where name = ?"
 			if _, err := tx.Exec(str, token, name); err != nil {
 				return store.Error(err)
 			}
@@ -152,7 +152,7 @@ func (ns *namespaceStore) GetNamespaces(filter map[string][]string, offset, limi
 
 // GetMoreNamespaces 根据mtime获取命名空间
 func (ns *namespaceStore) GetMoreNamespaces(mtime time.Time) ([]*model.Namespace, error) {
-	str := genNamespaceSelectSQL() + " where mtime >= FROM_UNIXTIME(?)"
+	str := genNamespaceSelectSQL() + " where mtime >= to_timestamp(?)"
 	rows, err := ns.slave.Query(str, timeToTimestamp(mtime))
 	if err != nil {
 		log.Errorf("[Store][database] get more namespace query err: %s", err.Error())
@@ -236,7 +236,7 @@ func cleanNamespace(tx *BaseTx, name string) error {
 // rlockNamespace rlock namespace
 func rlockNamespace(queryRow func(query string, args ...interface{}) *sql.Row, namespace string) (
 	string, error) {
-	str := "select name from namespace where name = ? and flag != 1 lock in share mode"
+	str := "select name from namespace where name = ? and flag != 1 for share"
 
 	var name string
 	err := queryRow(str, namespace).Scan(&name)
@@ -253,10 +253,10 @@ func rlockNamespace(queryRow func(query string, args ...interface{}) *sql.Row, n
 // genNamespaceSelectSQL 生成namespace的查询语句
 func genNamespaceSelectSQL() string {
 	str := `
-	SELECT name, IFNULL(comment, ''), token
-	, owner, flag, UNIX_TIMESTAMP(ctime)
-	, UNIX_TIMESTAMP(mtime)
-	, IFNULL(service_export_to, '{}'), IFNULL(metadata, '{}')
+	SELECT name, COALESCE(comment, ''), token
+	, owner, flag, extract(epoch from ctime)::bigint
+	, extract(epoch from mtime)::bigint
+	, COALESCE(service_export_to, '{}'), COALESCE(metadata, '{}')
 FROM namespace
 	`
 	return str

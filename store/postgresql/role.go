@@ -15,7 +15,7 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package sqldb
+package postgresql
 
 import (
 	"encoding/json"
@@ -47,7 +47,7 @@ func (s *roleStore) AddRole(role *authcommon.Role) error {
 INSERT INTO auth_role (id, name, owner, source, role_type
 	, comment, flag, metadata, ctime, mtime)
 VALUES (?, ?, ?, ?, ?
-	, ?, 0, ?, sysdate(), sysdate())
+	, ?, 0, ?, now(), now())
 		`
 		args := []interface{}{role.ID, role.Name, role.Owner, role.Source, role.Type, role.Comment, utils.MustJson(role.Metadata)}
 		if _, err := tx.Exec(addSql, args...); err != nil {
@@ -71,7 +71,7 @@ func (s *roleStore) savePrincipals(tx *BaseTx, role *authcommon.Role) error {
 		return err
 	}
 
-	// 原实现的列列表里写了 IFNULL(extend_info, '')（函数不能出现在列列表中），
+	// 原实现的列列表里写了 COALESCE(extend_info, '')（函数不能出现在列列表中），
 	// 且四个列只给了三个占位符，与实际传入的四个参数不匹配
 	insertTpl := "INSERT INTO auth_role_principal(role_id, principal_id, principal_role, extend_info) VALUES (?, ?, ?, ?)"
 
@@ -98,7 +98,7 @@ func (s *roleStore) UpdateRole(role *authcommon.Role) error {
 	err := s.master.processWithTransaction("update_role", func(tx *BaseTx) error {
 		updateSql := `
 UPDATE auth_role
-SET source = ?, role_type = ?, comment = ?, metadata = ?, mtime = sysdate()
+SET source = ?, role_type = ?, comment = ?, metadata = ?, mtime = now()
 WHERE id = ?
 				`
 		args := []interface{}{role.Source, role.Type, role.Comment, utils.MustJson(role.Metadata), role.ID}
@@ -150,7 +150,7 @@ func (s *roleStore) CleanPrincipalRoles(tx store.Tx, p *authcommon.Principal) er
 			return err
 		}
 
-		if _, err := dbTx.Exec("UPDATE auth_role SET mtime = sysdate() WHERE id = ?", roleId); err != nil {
+		if _, err := dbTx.Exec("UPDATE auth_role SET mtime = now() WHERE id = ?", roleId); err != nil {
 			log.Error("[store][role] update role when clean principal role", zap.String("id", roleId),
 				zap.String("principal", p.String()), zap.Error(err))
 			return err
@@ -173,8 +173,8 @@ func (s *roleStore) GetRole(id string) (*authcommon.Role, error) {
 
 	defer func() { _ = tx.Commit() }()
 
-	querySql := "SELECT id, name, owner, source, role_type, comment, flag, metadata, UNIX_TIMESTAMP(ctime), " +
-		" UNIX_TIMESTAMP(mtime) FROM auth_role WHERE flag = 0 AND id = ?"
+	querySql := "SELECT id, name, owner, source, role_type, comment, flag, metadata, extract(epoch from ctime)::bigint, " +
+		" extract(epoch from mtime)::bigint FROM auth_role WHERE flag = 0 AND id = ?"
 	args := []interface{}{id}
 
 	row := tx.QueryRow(querySql, args...)
@@ -216,10 +216,10 @@ func (s *roleStore) GetMoreRoles(firstUpdate bool, mtime time.Time) ([]*authcomm
 	defer func() { _ = tx.Commit() }()
 
 	args := make([]interface{}, 0)
-	querySql := "SELECT id, name, owner, source, role_type, comment, flag, metadata, UNIX_TIMESTAMP(ctime), " +
-		" UNIX_TIMESTAMP(mtime) FROM auth_role "
+	querySql := "SELECT id, name, owner, source, role_type, comment, flag, metadata, extract(epoch from ctime)::bigint, " +
+		" extract(epoch from mtime)::bigint FROM auth_role "
 	if !firstUpdate {
-		querySql += " WHERE mtime >= FROM_UNIXTIME(?)"
+		querySql += " WHERE mtime >= to_timestamp(?)"
 		args = append(args, timeToTimestamp(mtime))
 	} else {
 		querySql += " WHERE flag = 0"
@@ -270,7 +270,7 @@ func (s *roleStore) GetMoreRoles(firstUpdate bool, mtime time.Time) ([]*authcomm
 }
 
 func (s *roleStore) fetchRolePrincipals(tx *BaseTx, role *authcommon.Role) error {
-	rows, err := tx.Query("SELECT role_id, principal_id, principal_role, IFNULL(extend_info, '') FROM "+
+	rows, err := tx.Query("SELECT role_id, principal_id, principal_role, COALESCE(extend_info, '') FROM "+
 		" auth_role_principal WHERE rold_id = ?", role.ID)
 	if err != nil {
 		log.Error("[store][role] fetch role principals", zap.String("name", role.Name), zap.Error(err))

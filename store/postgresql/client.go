@@ -15,7 +15,7 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package sqldb
+package postgresql
 
 import (
 	"database/sql"
@@ -71,7 +71,7 @@ func deleteClient(tx *BaseTx, clientID string) error {
 		return errors.New("delete client missing client id")
 	}
 
-	str := "update client set flag = 1, mtime = sysdate() where `id` = ?"
+	str := "update client set flag = 1, mtime = now() where \"id\" = ?"
 	_, err := tx.Exec(str, clientID)
 	return store.Error(err)
 }
@@ -100,12 +100,12 @@ func (cs *clientStore) BatchDeleteClients(ids []string) error {
 
 // GetMoreClients 根据mtime获取增量clients，返回所有store的变更信息
 func (cs *clientStore) GetMoreClients(mtime time.Time, firstUpdate bool) (map[string]*model.Client, error) {
-	str := `select client.id, client.host, client.type, IFNULL(client.version,""), IFNULL(client.region, ""),
-		 IFNULL(client.zone, ""), IFNULL(client.campus, ""), client.flag,  IFNULL(client_stat.target, ""), 
-		 IFNULL(client_stat.port, 0), IFNULL(client_stat.protocol, ""), IFNULL(client_stat.path, ""), 
-		 UNIX_TIMESTAMP(client.ctime), UNIX_TIMESTAMP(client.mtime)
+	str := `select client.id, client.host, client.type, COALESCE(client.version, ''), COALESCE(client.region, ''),
+		 COALESCE(client.zone, ''), COALESCE(client.campus, ''), client.flag,  COALESCE(client_stat.target, ''), 
+		 COALESCE(client_stat.port, 0), COALESCE(client_stat.protocol, ''), COALESCE(client_stat.path, ''), 
+		 extract(epoch from client.ctime)::bigint, extract(epoch from client.mtime)::bigint
 		 from client left join client_stat on client.id = client_stat.client_id `
-	str += " where client.mtime >= FROM_UNIXTIME(?)"
+	str += " where client.mtime >= to_timestamp(?)"
 	if firstUpdate {
 		str += " and flag = 0"
 	}
@@ -209,7 +209,7 @@ func batchDeleteClientsMain(tx *BaseTx, ids []string) error {
 		if len(objects) == 0 {
 			return nil
 		}
-		str := `update client set flag = 1, mtime = sysdate() where id in ( ` + PlaceholdersN(len(objects)) + `)`
+		str := `update client set flag = 1, mtime = now() where id in ( ` + PlaceholdersN(len(objects)) + `)`
 		_, err := tx.Exec(str, objects...)
 		return store.Error(err)
 	})
@@ -232,7 +232,7 @@ func batchCleanClientStats(tx *BaseTx, ids []string) error {
 }
 
 func (cs *clientStore) GetClientStat(clientID string) ([]*model.ClientStatStore, error) {
-	str := "select `target`, `port`, `protocol`, `path` from client_stat where client_id = ?"
+	str := "select \"target\", \"port\", \"protocol\", \"path\" from client_stat where client_id = ?"
 	rows, err := cs.master.Query(str, clientID)
 	if err != nil {
 		log.Errorf("[Store][database] query client stat err: %s", err.Error())
@@ -346,7 +346,7 @@ func (cs *clientStore) updateClient(client *model.Client) error {
 
 func addClientMain(tx *BaseTx, client *model.Client) error {
 	str := `insert into client(id, host, type, version, region, zone, campus, flag, ctime, mtime)
-			 values(?, ?, ?, ?, ?, ?, ?, 0, sysdate(), sysdate())`
+			 values(?, ?, ?, ?, ?, ?, ?, 0, now(), now())`
 	_, err := tx.Exec(str,
 		client.Proto().GetId().GetValue(),
 		client.Proto().GetHost().GetValue(),
@@ -360,7 +360,7 @@ func addClientMain(tx *BaseTx, client *model.Client) error {
 }
 
 func batchAddClientMain(tx *BaseTx, clients []*model.Client) error {
-	str := `replace into client(id, host, type, version, region, zone, campus, flag, ctime, mtime)
+	str := `insert into client(id, host, type, version, region, zone, campus, flag, ctime, mtime)
 		 values`
 	first := true
 	args := make([]interface{}, 0)
@@ -368,7 +368,7 @@ func batchAddClientMain(tx *BaseTx, clients []*model.Client) error {
 		if !first {
 			str += ","
 		}
-		str += "(?, ?, ?, ?, ?, ?, ?, 0, sysdate(), sysdate())"
+		str += "(?, ?, ?, ?, ?, ?, ?, 0, now(), now())"
 		first = false
 
 		args = append(args, client.Proto().GetId().GetValue(),
@@ -379,6 +379,10 @@ func batchAddClientMain(tx *BaseTx, clients []*model.Client) error {
 			client.Proto().GetLocation().GetZone().GetValue(),
 			client.Proto().GetLocation().GetCampus().GetValue())
 	}
+	// 等价于 MySQL 的 REPLACE INTO：主键冲突时用新值覆盖全部非主键列
+	str += ` ON CONFLICT (id) DO UPDATE SET host = EXCLUDED.host, type = EXCLUDED.type,
+		 version = EXCLUDED.version, region = EXCLUDED.region, zone = EXCLUDED.zone,
+		 campus = EXCLUDED.campus, flag = EXCLUDED.flag, ctime = EXCLUDED.ctime, mtime = EXCLUDED.mtime`
 	_, err := tx.Exec(str, args...)
 	return err
 }
@@ -438,7 +442,7 @@ func addClientStat(tx *BaseTx, client *model.Client) error {
 
 func updateClientMain(tx *BaseTx, client *model.Client) error {
 	str := `update client set host = ?,
-	 type = ?, version = ?, region = ?, zone = ?, campus = ?, mtime = sysdate() where id = ?`
+	 type = ?, version = ?, region = ?, zone = ?, campus = ?, mtime = now() where id = ?`
 
 	_, err := tx.Exec(str,
 		client.Proto().GetHost().GetValue(),

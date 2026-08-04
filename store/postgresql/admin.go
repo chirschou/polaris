@@ -15,7 +15,7 @@
  * specific language governing permissions and limitations under the License.
  */
 
-package sqldb
+package postgresql
 
 import (
 	"context"
@@ -76,7 +76,7 @@ type leaderElectionStore struct {
 func (l *leaderElectionStore) CreateLeaderElection(key string) error {
 	log.Debugf("[Store][database] create leader election (%s)", key)
 	return l.master.processWithTransaction("createLeaderElection", func(tx *BaseTx) error {
-		mainStr := "insert ignore into leader_election (elect_key, leader) values (?, ?)"
+		mainStr := "insert into leader_election (elect_key, leader) values (?, ?) on conflict do nothing"
 		if _, err := tx.Exec(mainStr, key, ""); err != nil {
 			log.Errorf("[Store][database] create leader election (%s), err: %s", key, err.Error())
 		}
@@ -95,7 +95,7 @@ func (l *leaderElectionStore) GetVersion(key string) (int64, error) {
 	mainStr := "select version from leader_election where elect_key = ?"
 
 	var count int64
-	err := l.master.DB.QueryRow(mainStr, key).Scan(&count)
+	err := l.master.QueryRow(mainStr, key).Scan(&count)
 	if err != nil {
 		log.Errorf("[Store][database] get version (%s), err: %s", key, err.Error())
 	}
@@ -134,13 +134,16 @@ func (l *leaderElectionStore) CompareAndSwapVersion(key string, curVersion int64
 // CheckMtimeExpired check last modify time expired
 func (l *leaderElectionStore) CheckMtimeExpired(key string, leaseTime int32) (string, bool, error) {
 	log.Debugf("[Store][database] check mtime expired (%s, %d)", key, leaseTime)
-	mainStr := "select leader, FROM_UNIXTIME(UNIX_TIMESTAMP(SYSDATE())) - mtime from leader_election where elect_key = ?"
+	// 取当前时间与 mtime 的秒差，与 leaseTime（秒）比较；
+	// MySQL 版写作 FROM_UNIXTIME(UNIX_TIMESTAMP(SYSDATE())) - mtime，依赖 datetime 的数值相减语义
+	mainStr := "select leader, extract(epoch from now())::bigint - extract(epoch from mtime)::bigint" +
+		" from leader_election where elect_key = ?"
 
 	var (
 		leader   string
 		diffTime int32
 	)
-	err := l.master.DB.QueryRow(mainStr, key).Scan(&leader, &diffTime)
+	err := l.master.QueryRow(mainStr, key).Scan(&leader, &diffTime)
 	if err != nil {
 		log.Errorf("[Store][database] check mtime expired (%s), err: %s", key, err.Error())
 	}
@@ -150,7 +153,7 @@ func (l *leaderElectionStore) CheckMtimeExpired(key string, leaseTime int32) (st
 // ListLeaderElections list the election records
 func (l *leaderElectionStore) ListLeaderElections() ([]*admin.LeaderElection, error) {
 	log.Info("[Store][database] list leader election")
-	mainStr := "select elect_key, leader, UNIX_TIMESTAMP(ctime), UNIX_TIMESTAMP(mtime) from leader_election"
+	mainStr := "select elect_key, leader, extract(epoch from ctime)::bigint, extract(epoch from mtime)::bigint from leader_election"
 
 	rows, err := l.master.Query(mainStr)
 	if err != nil {
@@ -434,7 +437,7 @@ func (m *adminStore) BatchCleanDeletedInstances(timeout time.Duration, batchSize
 	err := m.master.processWithTransaction("batchCleanDeletedInstances", func(tx *BaseTx) error {
 		// 查询出需要清理的实例 ID 信息
 		loadWaitDel := "SELECT id FROM instance WHERE flag = 1 AND " +
-			"mtime <= FROM_UNIXTIME(UNIX_TIMESTAMP(SYSDATE()) - ?) LIMIT ?"
+			"mtime <= to_timestamp(extract(epoch from now())::bigint - ?) LIMIT ?"
 		rows, err := tx.Query(loadWaitDel, int32(timeout.Seconds()), batchSize)
 		if err != nil {
 			log.Errorf("[Store][database] batch clean soft deleted instances(%d), err: %s", batchSize, err.Error())
@@ -502,7 +505,7 @@ func (m *adminStore) BatchCleanDeletedInstances(timeout time.Duration, batchSize
 func (m *adminStore) GetUnHealthyInstances(timeout time.Duration, limit uint32) ([]string, error) {
 	log.Infof("[Store][database] get unhealthy instances which mtime timeout %s (%d)", timeout, limit)
 	queryStr := "select id from instance where flag=0 and enable_health_check=1 and health_status=0 " +
-		"and mtime < FROM_UNIXTIME(UNIX_TIMESTAMP(SYSDATE()) - ?) limit ?"
+		"and mtime < to_timestamp(extract(epoch from now())::bigint - ?) limit ?"
 	rows, err := m.master.Query(queryStr, int32(timeout.Seconds()), limit)
 	if err != nil {
 		log.Errorf("[Store][database] get unhealthy instances, err: %s", err.Error())
@@ -533,9 +536,10 @@ func (m *adminStore) BatchCleanDeletedClients(timeout time.Duration, batchSize u
 	log.Infof("[Store][database] batch clean soft deleted clients(%d)", batchSize)
 	var rows int64
 	err := m.master.processWithTransaction("batchCleanDeletedClients", func(tx *BaseTx) error {
-		// 原实现只有一个占位符却传了两个参数，且未按 timeout 过滤；
-		// 补上 mtime 条件与 BatchCleanDeletedInstances 的语义保持一致
-		mainStr := "delete from client where flag = 1 and mtime <= FROM_UNIXTIME(UNIX_TIMESTAMP(SYSDATE()) - ?) limit ?"
+		// PostgreSQL 的 DELETE 不支持 LIMIT，改用主键子查询；
+		// 同时补上 timeout 过滤，与 BatchCleanDeletedInstances 的语义保持一致
+		mainStr := "delete from client where id in (select id from client where flag = 1 " +
+			"and mtime <= to_timestamp(extract(epoch from now())::bigint - ?) limit ?)"
 		result, err := tx.Exec(mainStr, int32(timeout.Seconds()), batchSize)
 		if err != nil {
 			log.Errorf("[Store][database] batch clean soft deleted clients(%d), err: %s", batchSize, err.Error())
